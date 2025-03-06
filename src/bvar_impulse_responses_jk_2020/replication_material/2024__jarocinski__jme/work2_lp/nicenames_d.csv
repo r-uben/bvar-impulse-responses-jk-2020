@@ -1,0 +1,17 @@
+id,name
+sveny01,1-year Treasury yield
+sveny02,2-year Treasury yield
+sveny10,10-year Treasury yield
+bkeven02,2-year Breakeven Inflation (TIPS)
+bkeven05,5-year Breakeven Inflation (TIPS)
+sp500,SP500
+bofaml_us_bbb_oas,BBB corporate bond OAS (US)
+usdeur,USD per EUR
+eurusd,EUR per USD
+twexeme,EME dollar index
+broadexea_usd,Broad dollar ex EUR
+bofaml_us_hyld_oas,High yield corporate bond OAS (US)
+krippner,US Short Shadow Rate (Krippner)
+krippnerlong,FF Effective/Shadow Rate (Krippner)
+ff,Fed Funds Effective Rate
+nfci_lin,NFCI (weekly)

@@ -1,0 +1,27 @@
+date,off,txt
+1991-12-20,0,IM
+1998-10-15,0,IM
+2001-01-03,0,IM
+2001-04-18,0,.IM
+2008-01-22,0,IM
+2004-01-28,-1,drop considerable
+1995-07-06,-1,first easing
+2002-08-13,-1,weakness
+1999-05-18,-1,tightening
+2003-05-06,-1,unwelcome
+1994-12-20,-1,overshooting
+1999-10-05,-1,tightening
+2003-10-28,-1,considerable
+2001-01-03,-1,Jan3.2001
+1998-10-15,-1,unsettled
+2009-03-18,0,QE1
+2011-08-09,1,FG mid-2013
+2011-9-21,0,Twist
+2013-06-19,1,Taper
+2013-09-18,0,No taper
+2014-12-17,0,patient
+2015-03-18,1,unlikely
+2015-09-17,-1,dovish
+2016-03-16,1,gradual
+
+
