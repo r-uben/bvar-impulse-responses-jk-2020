@@ -8,81 +8,137 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import time
+import os
 
 
-def prepare_data():
-    """Prepare and merge macroeconomic data for VAR analysis
+def load_shock_data(file_path="data/us_shocks.csv"):
+    """Load high-frequency shock data from CSV file
     
-    This function:
-    1. Loads GDP data from S3 bucket
-    2. Loads S&P 500 data from external source 
-    3. Loads Federal Funds rate data
-    4. Merges all data to monthly frequency using left joins
-    5. Takes log of S&P 500 index
-    
+    Args:
+        file_path: Path to the shock data CSV file
+        
     Returns:
-        pd.DataFrame: Combined dataset with GDP, S&P 500, and Fed Funds rate
-                     at monthly frequency
+        pd.DataFrame: Shock data with datetime index
     """
-    # Load data from different sources
+    df = pd.read_csv(file_path)
+    
+    # Convert year, month to datetime index
+    df['date'] = pd.to_datetime(df[['year', 'month']].assign(day=1)) + pd.offsets.MonthEnd(0)
+    df = df.set_index('date')
+    
+    # Filter to keep only the required shock columns
+    shock_cols = ['ff4_hf', 'sp500_hf']
+    return df[shock_cols]
+
+
+def prepare_data(use_shock_data=True):
+    """Prepare and merge macroeconomic data for VAR analysis"""
+    # Load macroeconomic data
     bucket = BucketManager("macroeconomic-data")
     gdp_data = get_gdp_data(bucket)
     sp500_data = get_sp500()
     ff_data = fed_funds()
+ 
+    if use_shock_data:
+        # Load high-frequency shock data first
+        print("Loading high-frequency shock data...")
+        shock_data = load_shock_data()
+        print("\nShock data shape:", shock_data.shape)
+        print("Shock data date range:", shock_data.index[0], "to", shock_data.index[-1])
+        print("Missing values in shock data:")
+        print(shock_data.isnull().sum())
+
+        # Restrict sample to periods where we have shock data
+        start_date = shock_data.index[0]
+        end_date = shock_data.index[-1]
+        
+        # Filter other data to match shock data sample
+        gdp_data = gdp_data.loc[start_date:end_date]
+        sp500_data = sp500_data.loc[start_date:end_date]
+        ff_data = ff_data.loc[start_date:end_date]
     
-    # 2. Prepare the data
-    print("Preparing data...")
-    # Merge GDP with S&P 500 data, resampling S&P to month-end frequency
+    print("\nData shapes before merge:")
+    print("GDP data:", gdp_data.shape)
+    print("S&P500 data:", sp500_data.shape)
+    print("Fed Funds data:", ff_data.shape)
+    
+    # Merge all data
     data = pd.merge(
         gdp_data,
         sp500_data.resample('ME').last(),
         left_index=True,
         right_index=True,
-        how='left'
+        how='inner'
     )
     
-    # Merge result with Federal Funds rate data
+    print("\nAfter first merge:", data.shape)
+    print("Missing values after first merge:")
+    print(data.isnull().sum())
+    
     data = pd.merge(
         data,
         ff_data,
         left_index=True,
         right_index=True,
-        how='left'
+        how='inner'
     )
     
-    # Take natural log of S&P 500 for analysis
+    print("\nAfter second merge:", data.shape)
+    print("Missing values after second merge:")
+    print(data.isnull().sum())
+    
+    # Take natural log of S&P 500
     data['log_sp500'] = np.log(data['sp500'])
+    
+    if use_shock_data:
+        # Merge with shock data
+        data = pd.merge(
+            shock_data,
+            data,
+            left_index=True,
+            right_index=True,
+            how='inner'
+        )
+        
+        print("\nAfter merging with shock data:", data.shape)
+        print("Missing values in final dataset:")
+        print(data.isnull().sum())
+        print("\nFirst few rows of final dataset:")
+        print(data.head())
+    
     return data
 
-def run_var_analysis():
+
+def run_var_analysis(use_shock_data=True):
     """Run Bayesian VAR analysis on macroeconomic data"""
-    
     start_time = time.time()
     
-    # 1. Get the data
+    # Get the data
     print("Loading data...")
-    data = prepare_data()
+    data = prepare_data(use_shock_data)
     
-    
-    # Select variables matching the original paper's specification
-    # Following main1.m: mnames = {'ff4_hf','sp500_hf'} for US baseline
+    # Select and standardize variables
     var_data = pd.DataFrame({
-        # Monetary variables first (same as in main1.m)
-        'ff4_hf': data['fed_funds'],
-        'sp500_hf': data['log_sp500'],
-        # Then other variables (same as in main1.m for us1)
+        # Monetary shock variables first (high-frequency)
+        'ff4_hf': data['ff4_hf'],
+        'sp500_hf': data['sp500_hf'],
+        # Then other variables
         'gs1': data['fed_funds'],
         'logsp500': data['log_sp500'],
-        'us_rgdp': data['gdp_real'],
-        'us_gdpdef': data['gdp_nominal'] / data['gdp_real']
+        'us_rgdp': np.log(data['gdp_real']),  # Take log of GDP
+        'us_gdpdef': np.log(data['gdp_nominal'] / data['gdp_real'])  # Take log of GDP deflator
     })
     
-    # Handle missing values
-    var_data = var_data.ffill().bfill()
+    # Standardize all variables
+    var_data = (var_data - var_data.mean()) / var_data.std()
     
-    # Print data summary
+    # Verify no missing values
+    if var_data.isnull().any().any():
+        raise ValueError("Dataset contains missing values after preparation")
+    
     print("\nData Summary:")
     print(var_data.describe())
+    breakpoint()
     
     # 3. Set up the VAR with the paper's specifications
     print("\nSetting up BVAR model...")
@@ -91,7 +147,8 @@ def run_var_analysis():
         tightness=0.2,
         decay=1.0
     )
-    
+
+
     gs_settings = GibbsSettings(
         n_draws=100,  # Reduced for testing
         burnin=100,   # Reduced for testing
@@ -112,7 +169,12 @@ def run_var_analysis():
         irfs = bvar.compute_impulse_responses(
             results['beta_draws'], 
             results['sigma_draws'],
-            horizon=40
+            horizon=40,
+            identification='sign',  # Use sign restrictions for identification
+            sign_restrictions={
+                'monetary_policy': {'ff4_hf': '+', 'sp500_hf': '-'},  # MP shock
+                'cb_info': {'ff4_hf': '+', 'sp500_hf': '+'}           # CB info shock
+            }
         )
         
         # 6. Print results
@@ -124,7 +186,9 @@ def run_var_analysis():
         
         # 7. Plot impulse responses only if we have them
         if irfs is not None:
-            plot_impulse_responses(irfs, var_data.columns)
+            # Define shock names based on identification
+            shock_names = ['Monetary Policy', 'CB Information'] + [f'Shock {i+3}' for i in range(var_data.shape[1]-2)]
+            plot_impulse_responses(irfs, var_data.columns, shock_names=shock_names)
         else:
             print("Warning: No impulse responses were generated")
             
@@ -137,9 +201,20 @@ def run_var_analysis():
     
     return results, irfs
 
-def plot_impulse_responses(irfs, variable_names, shock_idx=0, response_indices=None):
-    """Plot impulse responses to a shock"""
+def plot_impulse_responses(irfs, variable_names, shock_names=None, shock_indices=[0, 1], response_indices=None):
+    """Plot impulse responses to identified shocks
+    
+    Args:
+        irfs: Impulse response function array [n_draws, n_vars, n_vars, horizon]
+        variable_names: Names of variables in the VAR
+        shock_names: Names of identified shocks (defaults to variable names)
+        shock_indices: Indices of shocks to plot
+        response_indices: Indices of response variables to plot (defaults to all)
+    """
     n_draws, N, _, horizon = irfs.shape
+    
+    if shock_names is None:
+        shock_names = variable_names
     
     if response_indices is None:
         response_indices = range(N)
@@ -149,37 +224,49 @@ def plot_impulse_responses(irfs, variable_names, shock_idx=0, response_indices=N
     lower_irfs = np.percentile(irfs, 16, axis=0)
     upper_irfs = np.percentile(irfs, 84, axis=0)
     
-    # Create figure
-    fig, axes = plt.subplots(len(response_indices), 1, figsize=(10, 2*len(response_indices)))
-    if len(response_indices) == 1:
-        axes = [axes]
+    # Create figure grid based on shock_indices and response_indices
+    n_shocks = len(shock_indices)
+    n_responses = len(response_indices)
+    fig, axes = plt.subplots(n_responses, n_shocks, figsize=(4*n_shocks, 3*n_responses))
     
-    # Plot each response
+    # Handle single row or column case
+    if n_responses == 1 and n_shocks == 1:
+        axes = np.array([[axes]])
+    elif n_responses == 1:
+        axes = axes.reshape(1, -1)
+    elif n_shocks == 1:
+        axes = axes.reshape(-1, 1)
+    
+    # Plot each response to each shock
     for i, resp_idx in enumerate(response_indices):
-        ax = axes[i]
-        
-        # Plot median
-        ax.plot(range(horizon), median_irfs[resp_idx, shock_idx, :], 'b-', linewidth=2)
-        
-        # Plot confidence bands
-        ax.fill_between(
-            range(horizon), 
-            lower_irfs[resp_idx, shock_idx, :], 
-            upper_irfs[resp_idx, shock_idx, :],
-            color='b', alpha=0.2
-        )
-        
-        # Add horizontal line at zero
-        ax.axhline(y=0, color='k', linestyle='-', alpha=0.2)
-        
-        # Set title and labels
-        ax.set_title(f"Response of {variable_names[resp_idx]} to {variable_names[shock_idx]} shock")
-        ax.set_xlabel("Horizon")
-        ax.set_ylabel("Response")
+        for j, shock_idx in enumerate(shock_indices):
+            ax = axes[i, j]
+            
+            # Plot median
+            ax.plot(range(horizon), median_irfs[resp_idx, shock_idx, :], 'b-', linewidth=2)
+            
+            # Plot confidence bands
+            ax.fill_between(
+                range(horizon), 
+                lower_irfs[resp_idx, shock_idx, :], 
+                upper_irfs[resp_idx, shock_idx, :],
+                color='b', alpha=0.2
+            )
+            
+            # Add horizontal line at zero
+            ax.axhline(y=0, color='k', linestyle='-', alpha=0.2)
+            
+            # Set title and labels
+            if i == 0:
+                ax.set_title(f"{shock_names[shock_idx]} Shock", fontsize=12)
+            if j == 0:
+                ax.set_ylabel(f"{variable_names[resp_idx]}", fontsize=12)
+            if i == n_responses - 1:
+                ax.set_xlabel("Horizon (months)", fontsize=10)
     
     plt.tight_layout()
     plt.savefig("impulse_responses.pdf")
     plt.show()
 
 if __name__ == "__main__":
-    results, irfs = run_var_analysis() 
+    results, irfs = run_var_analysis(use_shock_data=True) 

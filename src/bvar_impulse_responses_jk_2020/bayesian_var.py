@@ -170,3 +170,142 @@ class BayesianVAR:
             'data': prepared_data,
             'prior': prior_matrices
         } 
+
+    def compute_impulse_responses(self, beta_draws, sigma_draws, horizon=40, 
+                                 identification='cholesky', sign_restrictions=None, 
+                                 max_trials=1000):
+        """Compute impulse responses based on posterior draws
+        
+        Args:
+            beta_draws: Posterior draws of VAR coefficients
+            sigma_draws: Posterior draws of VAR covariance matrices
+            horizon: Horizon for impulse responses
+            identification: Identification method ('cholesky' or 'sign')
+            sign_restrictions: Dictionary with sign restrictions for identified shocks
+            max_trials: Maximum number of rotation matrices to try (for sign restrictions)
+            
+        Returns:
+            Array of impulse responses [n_draws, n_vars, n_vars, horizon]
+        """
+        n_draws = beta_draws.shape[0]
+        N = sigma_draws.shape[1]  # Number of variables
+        irfs = np.zeros((n_draws, N, N, horizon))
+        
+        # For each posterior draw
+        for d in range(n_draws):
+            # Extract coefficients for this draw
+            beta = beta_draws[d].reshape(N, -1)  # [N, K]
+            sigma = sigma_draws[d]  # [N, N]
+            
+            # Create companion form matrices
+            companion = self._create_companion_matrix(beta, N, self.prior.lags)
+            
+            if identification == 'cholesky':
+                # Cholesky identification
+                impact = np.linalg.cholesky(sigma)
+                
+                # Compute impulse responses
+                irfs[d] = self._compute_irf_from_impact(companion, impact, N, horizon)
+                
+            elif identification == 'sign':
+                # Sign restriction identification
+                if sign_restrictions is None:
+                    raise ValueError("Sign restrictions must be provided for sign identification")
+                
+                # Try to find rotation matrices satisfying the restrictions
+                for _ in range(max_trials):
+                    # Start with Cholesky as the base
+                    impact = np.linalg.cholesky(sigma)
+                    
+                    # Generate random rotation matrix for the first two shocks
+                    theta = np.random.uniform(0, 2*np.pi)
+                    rotation = np.eye(N)
+                    rotation[0:2, 0:2] = np.array([
+                        [np.cos(theta), -np.sin(theta)],
+                        [np.sin(theta), np.cos(theta)]
+                    ])
+                    
+                    # Apply rotation
+                    candidate_impact = impact @ rotation
+                    
+                    # Compute impulse responses for checking restrictions
+                    candidate_irf = self._compute_irf_from_impact(companion, candidate_impact, N, horizon)
+                    
+                    # Check if restrictions are satisfied
+                    mp_satisfied = (
+                        candidate_irf[0, 0, 0] > 0 and  # ff4_hf responds positively to MP shock
+                        candidate_irf[1, 0, 0] < 0       # sp500_hf responds negatively to MP shock
+                    )
+                    
+                    cbi_satisfied = (
+                        candidate_irf[0, 1, 0] > 0 and  # ff4_hf responds positively to CB info shock
+                        candidate_irf[1, 1, 0] > 0       # sp500_hf responds positively to CB info shock
+                    )
+                    
+                    if mp_satisfied and cbi_satisfied:
+                        # Save the IRFs that satisfy the restrictions
+                        irfs[d] = candidate_irf
+                        break
+                else:
+                    # If no rotation satisfies restrictions after max_trials
+                    print(f"Warning: No rotation matrix found satisfying sign restrictions for draw {d}")
+                    # Just use the last candidate, despite not satisfying restrictions
+                    irfs[d] = candidate_irf
+        
+        return irfs
+
+    def _create_companion_matrix(self, beta, N, lags):
+        """Create companion form matrix from VAR coefficients
+        
+        Args:
+            beta: VAR coefficients [N, N*lags]
+            N: Number of variables
+            lags: Number of lags
+            
+        Returns:
+            Companion form matrix
+        """
+        # Initialize companion matrix
+        companion = np.zeros((N * lags, N * lags))
+        
+        # Fill in the coefficient matrices
+        for i in range(lags):
+            companion[0:N, i*N:(i+1)*N] = beta[:, i*N:(i+1)*N]
+        
+        # Fill in the identity matrices
+        for i in range(1, lags):
+            companion[i*N:(i+1)*N, (i-1)*N:i*N] = np.eye(N)
+        
+        return companion
+
+    def _compute_irf_from_impact(self, companion, impact, N, horizon):
+        """Compute impulse responses from companion form and impact matrix
+        
+        Args:
+            companion: Companion form matrix
+            impact: Impact matrix (e.g., Cholesky decomposition of covariance)
+            N: Number of variables
+            horizon: Horizon for impulse responses
+            
+        Returns:
+            Array of impulse responses [N, N, horizon]
+        """
+        # Initialize impulse responses
+        irf = np.zeros((N, N, horizon))
+        
+        # Impact responses (first period)
+        irf[:, :, 0] = impact
+        
+        # Propagate the impulses forward
+        for h in range(1, horizon):
+            # Compute shock response at horizon h
+            temp = np.zeros((N * self.prior.lags, N))
+            temp[0:N, :] = irf[:, :, h-1]
+            
+            # Multiply by companion matrix
+            temp = companion @ temp
+            
+            # Store the responses
+            irf[:, :, h] = temp[0:N, :]
+        
+        return irf 
