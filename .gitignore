@@ -1,2 +1,6 @@
 macroeconomics_data/
 src/bvar_impulse_response/replication_files
+
+
+*.pyc
+__pycache__
