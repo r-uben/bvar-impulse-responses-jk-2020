@@ -7,8 +7,15 @@ readme = "README.md"
 
 [tool.poetry.dependencies]
 python = "^3.13"
+numpy = "^1.26.0"
+pandas = "^2.0.0"
+scipy = "^1.11.0"
 
+[tool.poetry.scripts]
+get-data = "mains.get_data:main"
+run-bvar = "mains.run_bvar:run_var_analysis"
 
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
+
